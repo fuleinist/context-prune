@@ -432,4 +432,31 @@ mod tests {
         assert_eq!(out, payload);
         assert_eq!(saved, 0);
     }
+
+    #[test]
+    fn repeated_tool_output_lines_compress_hard() {
+        let content = "tool output line\n".repeat(400) + "RESULT: 42\n";
+        let (out, outcome) = compress_text(&content);
+        assert!(out.len() < content.len() / 10, "expected >90% savings on pure repetition");
+        assert!(outcome.transforms_applied.contains(&"dedupe_lines"));
+        assert!(out.contains("RESULT: 42"));
+    }
+
+    #[test]
+    fn nested_chat_response_walk_saves_bytes() {
+        let content = "tool output line\n".repeat(400) + "RESULT: 42\n";
+        let payload = serde_json::json!({
+            "id": "chatcmpl-mock",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": content },
+                "finish_reason": "stop"
+            }]
+        });
+        let (out, saved) = compress_json_value(payload, 2048);
+        let got = out["choices"][0]["message"]["content"].as_str().unwrap();
+        assert!(saved > 0, "expected savings walking nested payload");
+        assert!(got.contains("RESULT: 42"));
+    }
 }

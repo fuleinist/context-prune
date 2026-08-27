@@ -172,7 +172,19 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
         };
     }
 
-    // Non-streaming: read full body, compress response JSON too.
+    // Non-streaming: snapshot headers, then read full body and compress response JSON too.
+    let upstream_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)> = upstream_resp
+        .headers()
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "transfer-encoding" | "content-length" | "connection" | "content-encoding"
+            )
+        })
+        .map(|(n, v)| (n.clone(), v.clone()))
+        .collect();
+
     let resp_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
         Err(e) => {
@@ -194,7 +206,9 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     let mut resp = Response::builder().status(status);
     {
         let headers = resp.headers_mut().unwrap();
-        headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        for (name, value) in upstream_headers {
+            headers.insert(name, value);
+        }
     }
     match resp.body(Body::from(final_resp)) {
         Ok(r) => r,
