@@ -14,6 +14,23 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ data: [{ id: "mock-model-1" }] }));
       return;
     }
+    // SSE streaming path: body requests stream:true -> emit event-stream.
+    let parsed = null;
+    try { parsed = JSON.parse(body); } catch { /* not json */ }
+    if (parsed && parsed.stream === true) {
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "x-received-bytes": String(Buffer.byteLength(body)),
+      });
+      res.write("data: {\"id\":\"chunk-1\",\"delta\":\"hello \"}\n\n");
+      setTimeout(() => {
+        res.write("data: {\"id\":\"chunk-2\",\"delta\":\"world\"}\n\n");
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }, 50);
+      return;
+    }
     const content = "tool output line\n".repeat(400) + "RESULT: 42\n";
     const payload = {
       id: "chatcmpl-mock",

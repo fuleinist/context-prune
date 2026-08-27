@@ -89,10 +89,36 @@ function check(name, cond, detail) {
   });
   check("F5 malformed body does not 5xx", bad.status < 500, `status ${bad.status}`);
 
-  // 5. Stats endpoint (F3 acceptance)
+  // 5. SSE streaming passthrough (F1 streaming safety)
+  const sse = await new Promise((resolve, reject) => {
+    const data = JSON.stringify({ model: "mock-model-1", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const req = http.request(
+      `${PROXY}/v1/chat/completions`,
+      { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } },
+      (res) => {
+        let out = "";
+        res.on("data", (c) => (out += c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: out }));
+      }
+    );
+    req.on("error", reject);
+    req.end(data);
+  });
+  check(
+    "F1 SSE streamed with event-stream content-type",
+    sse.status === 200 && String(sse.headers["content-type"] || "").includes("text/event-stream"),
+    `status ${sse.status}, ct ${sse.headers["content-type"]}`
+  );
+  check(
+    "F5 SSE events preserved untouched",
+    sse.body.includes('"id":"chunk-1"') && sse.body.includes('"id":"chunk-2"') && sse.body.includes("data: [DONE]"),
+    sse.body.slice(0, 120)
+  );
+
+  // 6. Stats endpoint (F3 acceptance)
   const stats = await get("/stats");
   const s = JSON.parse(stats.body);
-  check("F3 /stats endpoint", stats.status === 200 && s.requests >= 3, stats.body);
+  check("F3 /stats endpoint", stats.status === 200 && s.requests >= 4, stats.body);
   check("F3 savings recorded", s.bytes_in > 0 && s.bytes_out >= 0, stats.body);
 
   console.log(failures === 0 ? "\nALL E2E CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
