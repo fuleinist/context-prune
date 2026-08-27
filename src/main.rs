@@ -1,4 +1,6 @@
 mod compress;
+#[cfg(feature = "skeleton")]
+mod skeleton;
 mod stats;
 
 use anyhow::Result;
@@ -52,6 +54,15 @@ enum Command {
         #[arg(long, default_value = "2048")]
         min_size: usize,
     },
+    /// Skeletonize a Rust source file: keep signatures, drop bodies (SPEC v2)
+    #[cfg(feature = "skeleton")]
+    Skeleton {
+        /// File to skeletonize
+        path: String,
+        /// Also print the skeleton output
+        #[arg(long)]
+        show: bool,
+    },
     /// Compress a single file and report the ratio (demo / debugging)
     Compress {
         /// File to compress ('-' for stdin)
@@ -87,6 +98,8 @@ async fn main() -> Result<()> {
             iterations,
             min_size,
         } => bench_cmd(&path, iterations, min_size),
+        #[cfg(feature = "skeleton")]
+        Command::Skeleton { path, show } => skeleton_cmd(&path, show),
     }
 }
 
@@ -177,6 +190,34 @@ fn bench_cmd(path: &str, iterations: usize, min_size: usize) -> Result<()> {
     println!("elapsed:         {:.3}s", elapsed.as_secs_f64());
     println!("per-iter:        {:.3} ms", elapsed.as_secs_f64() / iterations as f64 * 1000.0);
     println!("throughput:      {mbps:.1} MB/s");
+    Ok(())
+}
+
+#[cfg(feature = "skeleton")]
+fn skeleton_cmd(path: &str, show: bool) -> Result<()> {
+    let input = std::fs::read_to_string(path)?;
+    match skeleton::rust_skeleton(&input) {
+        Some(out) => {
+            let ratio = if input.is_empty() {
+                0.0
+            } else {
+                1.0 - out.len() as f64 / input.len() as f64
+            };
+            println!("mode:            code-skeleton (rust, tree-sitter)");
+            println!("input:           {} bytes", input.len());
+            println!("output:          {} bytes", out.len());
+            println!("saved:           {:.1}%", ratio * 100.0);
+            if show {
+                println!("---");
+                println!("{out}");
+            }
+        }
+        // F5 safety: parse failure = passthrough, never break.
+        None => {
+            println!("mode:            passthrough (input did not parse as Rust)");
+            println!("input:           {} bytes", input.len());
+        }
+    }
     Ok(())
 }
 

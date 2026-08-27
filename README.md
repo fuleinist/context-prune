@@ -50,6 +50,14 @@ Try the compressor on a file:
 context-prune compress big-compile-log.txt
 ```
 
+Skeletonize Rust source — keep every signature, drop the bodies
+(tree-sitter, SPEC v2):
+
+```bash
+context-prune skeleton src/main.rs --show
+# saved: 77.7% on this repo's compress.rs
+```
+
 ## Status
 
 Early build — see [SPEC.md](SPEC.md) for the full feature list and acceptance
