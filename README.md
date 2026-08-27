@@ -25,12 +25,17 @@ original payload passes through unchanged. Compression never breaks a request.
 ## Quickstart
 
 ```bash
+# from source (crates.io publish pending):
+git clone https://github.com/fuleinist/context-prune && cd context-prune
 cargo install --path .   # or: cargo build --release
+
 context-prune serve --upstream https://api.openai.com --port 8787
 
 # then point your agent at it:
 export OPENAI_BASE_URL=http://localhost:8787/v1
 ```
+
+Once published, `cargo install context-prune` works directly.
 
 Check what you saved:
 
