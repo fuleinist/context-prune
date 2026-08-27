@@ -48,7 +48,7 @@ context-prune compress big-compile-log.txt
 ## Status
 
 Early build — see [SPEC.md](SPEC.md) for the full feature list and acceptance
-criteria. Tracking cycles in the project's build journal.
+criteria. Tracking cycles in the [build journal](BENCH.md).
 
 ## License
 

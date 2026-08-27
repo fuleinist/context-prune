@@ -41,6 +41,17 @@ enum Command {
         #[arg(long, default_value = "context-prune.db")]
         db: String,
     },
+    /// Benchmark compression throughput on a file (debug vs release comparison)
+    Bench {
+        /// File to compress
+        path: String,
+        /// Number of iterations to run
+        #[arg(long, default_value = "200")]
+        iterations: usize,
+        /// Minimum string size (bytes) eligible for compression (JSON mode)
+        #[arg(long, default_value = "2048")]
+        min_size: usize,
+    },
     /// Compress a single file and report the ratio (demo / debugging)
     Compress {
         /// File to compress ('-' for stdin)
@@ -71,6 +82,11 @@ async fn main() -> Result<()> {
             min_size,
             show,
         } => compress_cmd(&path, min_size, show),
+        Command::Bench {
+            path,
+            iterations,
+            min_size,
+        } => bench_cmd(&path, iterations, min_size),
     }
 }
 
@@ -121,6 +137,46 @@ fn compress_cmd(path: &str, min_size: usize, show: bool) -> Result<()> {
         println!("---");
         println!("{output}");
     }
+    Ok(())
+}
+
+fn bench_cmd(path: &str, iterations: usize, min_size: usize) -> Result<()> {
+    if iterations == 0 {
+        anyhow::bail!("iterations must be > 0");
+    }
+    let input = std::fs::read_to_string(path)?;
+    anyhow::ensure!(!input.is_empty(), "input file is empty");
+    let is_json = serde_json::from_str::<serde_json::Value>(&input).is_ok();
+
+    let mut out_bytes = 0usize;
+    let start = std::time::Instant::now();
+    for _ in 0..iterations {
+        out_bytes = if is_json {
+            let v: serde_json::Value = serde_json::from_str(&input)?;
+            let (out_v, _) = compress::compress_json_value(v, min_size);
+            serde_json::to_string(&out_v)?.len()
+        } else {
+            let (out, _) = compress::compress_text(&input);
+            out.len()
+        };
+    }
+    let elapsed = start.elapsed();
+
+    let mode = if is_json { "json" } else { "text" };
+    let ratio = 1.0 - out_bytes as f64 / input.len() as f64;
+    let mbps =
+        (input.len() as f64 * iterations as f64) / 1_048_576.0 / elapsed.as_secs_f64();
+    let build = if cfg!(debug_assertions) { "debug" } else { "release" };
+
+    println!("build:           {build}");
+    println!("mode:            {mode}");
+    println!("input:           {} bytes", input.len());
+    println!("output:          {out_bytes} bytes");
+    println!("savings:         {:.1}%", ratio * 100.0);
+    println!("iterations:      {iterations}");
+    println!("elapsed:         {:.3}s", elapsed.as_secs_f64());
+    println!("per-iter:        {:.3} ms", elapsed.as_secs_f64() / iterations as f64 * 1000.0);
+    println!("throughput:      {mbps:.1} MB/s");
     Ok(())
 }
 
