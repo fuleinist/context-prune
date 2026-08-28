@@ -1,4 +1,5 @@
 mod compress;
+mod cache;
 mod profiles;
 #[cfg(feature = "skeleton")]
 mod skeleton;
@@ -42,6 +43,9 @@ enum Command {
         /// (per-model overrides still apply, e.g. small models -> aggressive)
         #[arg(long, default_value = "default")]
         profile: String,
+        /// Disable the content-hash compression cache
+        #[arg(long, default_value = "false")]
+        no_cache: bool,
     },
     /// Show cumulative compression stats from the DB
     Stats {
@@ -96,7 +100,8 @@ async fn main() -> Result<()> {
             db,
             passthrough,
             profile,
-        } => proxy::serve(port, &upstream, &profile, min_size, &db, passthrough).await,
+            no_cache,
+        } => proxy::serve(port, &upstream, &profile, min_size, &db, passthrough, no_cache).await,
         Command::Stats { db } => stats_cmd(&db),
         Command::Compress {
             path,

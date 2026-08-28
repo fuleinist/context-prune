@@ -13,15 +13,20 @@ use axum::{
 };
 use std::sync::{Arc, Mutex};
 
+use crate::cache::{self, CacheStore};
 use crate::compress::{self, CompressConfig};
 use crate::profiles::{self, Profile};
 use crate::stats::StatsStore;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct ProxyState {
     pub upstream: String,
     pub passthrough: bool,
     pub profile: Profile,
+    pub cache: Option<Arc<Mutex<CacheStore>>>,
+    pub cache_hits: Arc<AtomicU64>,
     pub client: reqwest::Client,
     pub stats: Arc<Mutex<StatsStore>>,
 }
@@ -33,6 +38,7 @@ pub async fn serve(
     min_size_override: Option<usize>,
     db: &str,
     passthrough: bool,
+    no_cache: bool,
 ) -> anyhow::Result<()> {
     let mut profile = profiles::resolve(profile_name)
         .ok_or_else(|| anyhow::anyhow!("unknown profile '{profile_name}' (try: default, conservative, aggressive)"))?;
@@ -40,10 +46,17 @@ pub async fn serve(
         profile.config.min_size = ms;
     }
     let stats = Arc::new(Mutex::new(StatsStore::open(db)?));
+    let cache = if no_cache {
+        None
+    } else {
+        Some(Arc::new(Mutex::new(CacheStore::open(db)?)))
+    };
     let state = ProxyState {
         upstream: upstream.trim_end_matches('/').to_string(),
         passthrough,
         profile,
+        cache,
+        cache_hits: Arc::new(AtomicU64::new(0)),
         client: reqwest::Client::new(),
         stats,
     };
@@ -68,6 +81,10 @@ async fn stats_handler(State(state): State<ProxyState>) -> impl IntoResponse {
         Ok(s) => s,
         Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+    let cache_hits = state.cache_hits.load(Ordering::Relaxed);
+    let cache_entries = state.cache.as_ref()
+        .and_then(|c| c.lock().unwrap().entries().ok())
+        .unwrap_or(0);
     let saved = summary.bytes_in.saturating_sub(summary.bytes_out);
     let ratio = if summary.bytes_in > 0 {
         (saved as f64 / summary.bytes_in as f64) * 100.0
@@ -80,6 +97,8 @@ async fn stats_handler(State(state): State<ProxyState>) -> impl IntoResponse {
         "bytes_out": summary.bytes_out,
         "bytes_saved": saved,
         "savings_percent": (ratio * 10.0).round() / 10.0,
+        "cache_hits": cache_hits,
+        "cache_entries": cache_entries,
     }))
     .into_response()
 }
@@ -141,7 +160,7 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     let final_body = if state.passthrough || body_bytes.is_empty() {
         body_bytes.to_vec()
     } else {
-        maybe_compress_json_bytes(&body_bytes, &profile.config)
+        maybe_compress_json_bytes_cached(&state, &body_bytes, &profile.config)
     };
 
     upstream_req = upstream_req.body(final_body);
@@ -219,7 +238,7 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     let final_resp = if state.passthrough {
         resp_bytes.to_vec()
     } else {
-        maybe_compress_json_bytes(&resp_bytes, &profile.config)
+        maybe_compress_json_bytes_cached(&state, &resp_bytes, &profile.config)
     };
     let bytes_out = final_resp.len() as i64;
     record_stats(&state, &path, bytes_in, bytes_out);
@@ -241,9 +260,14 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     }
 }
 
-/// Try to parse bytes as JSON and compress string fields. On ANY failure or
-/// non-JSON input, returns the original bytes unchanged (F5 safety).
-fn maybe_compress_json_bytes(bytes: &[u8], cfg: &CompressConfig) -> Vec<u8> {
+/// Try to parse bytes as JSON and compress string fields, with caching.
+/// On ANY failure or non-JSON input, returns the original bytes unchanged (F5 safety).
+/// Cache hit increments the hit counter and returns the stored result.
+fn maybe_compress_json_bytes_cached(
+    state: &ProxyState,
+    bytes: &[u8],
+    cfg: &CompressConfig,
+) -> Vec<u8> {
     if bytes.len() < 2 {
         return bytes.to_vec();
     }
@@ -251,13 +275,31 @@ fn maybe_compress_json_bytes(bytes: &[u8], cfg: &CompressConfig) -> Vec<u8> {
     if first != b'{' && first != b'[' {
         return bytes.to_vec();
     }
+
+    // Check cache first.
+    if let Some(cache) = &state.cache {
+        let hash = cache::hash_bytes(bytes);
+        if let Ok(Some(cached)) = cache.lock().unwrap().get(&hash) {
+            state.cache_hits.fetch_add(1, Ordering::Relaxed);
+            return cached;
+        }
+    }
+
+    // Cache miss: compress.
     let parsed: serde_json::Value = match serde_json::from_slice(bytes) {
         Ok(v) => v,
         Err(_) => return bytes.to_vec(),
     };
     let (compressed, _saved) = compress::compress_json_value_with(parsed, cfg);
     match serde_json::to_vec(&compressed) {
-        Ok(out) if out.len() < bytes.len() => out,
+        Ok(out) if out.len() < bytes.len() => {
+            // Store in cache.
+            if let Some(cache) = &state.cache {
+                let hash = cache::hash_bytes(bytes);
+                let _ = cache.lock().unwrap().put(&hash, bytes.len(), out.len(), &out);
+            }
+            out
+        }
         _ => bytes.to_vec(),
     }
 }

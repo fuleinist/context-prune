@@ -1,0 +1,62 @@
+﻿cargo :     Updating crates.io index
+At line:1 char:1
++ cargo test 2>&1 | Out-File -Encoding utf8 test-run.log; echo "TEST_EX ...
++ ~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Updating crates.io index:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Blocking waiting for file lock on package cache
+     Locking 7 packages to latest compatible versions
+      Adding block-buffer v0.10.4
+      Adding cpufeatures v0.2.17
+      Adding crypto-common v0.1.7
+      Adding digest v0.10.7
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding sha2 v0.10.9 (available: v0.11.0)
+      Adding typenum v1.20.1
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling generic-array v0.14.7
+   Compiling typenum v1.20.1
+   Compiling cpufeatures v0.2.17
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling context-prune v0.3.0 (G:\dev\projects\context-prune)
+error[E0252]: the name `Arc` is defined multiple times
+  --> src\proxy.rs:21:17
+   |
+14 | use std::sync::{Arc, Mutex};
+   |                 --- previous import of the type `Arc` here
+...
+21 | use std::sync::{Arc, Mutex};
+   |                 ^^^--
+   |                 |
+   |                 `Arc` reimported here
+   |                 help: remove unnecessary import
+   |
+   = note: `Arc` must be defined only once in the type namespace of this module
+
+error[E0252]: the name `Mutex` is defined multiple times
+  --> src\proxy.rs:21:22
+   |
+14 | use std::sync::{Arc, Mutex};
+   |                      ----- previous import of the type `Mutex` here
+...
+21 | use std::sync::{Arc, Mutex};
+   |                      ^^^^^ `Mutex` reimported here
+   |
+   = note: `Mutex` must be defined only once in the type namespace of this module
+
+warning: unused imports: `Arc` and `Mutex`
+  --> src\proxy.rs:21:17
+   |
+21 | use std::sync::{Arc, Mutex};
+   |                 ^^^  ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0252`.
+warning: `context-prune` (bin "context-prune" test) generated 1 warning
+error: could not compile `context-prune` (bin "context-prune" test) due to 2 previous errors; 1 warning emitted
