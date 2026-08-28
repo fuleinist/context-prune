@@ -11,14 +11,13 @@ use axum::{
     routing::any,
     Router,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::cache::{self, CacheStore};
 use crate::compress::{self, CompressConfig};
 use crate::profiles::{self, Profile};
 use crate::stats::StatsStore;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct ProxyState {
