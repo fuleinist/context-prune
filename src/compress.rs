@@ -22,8 +22,39 @@ impl CompressOutcome {
     }
 }
 
-/// Compress free text with all deterministic transforms.
+/// Tunable knobs for the deterministic transforms (see `profiles`).
+/// ANSI stripping and CR-collapse always run: they remove formatting noise
+/// only and can never change meaning.
+#[derive(Debug, Clone)]
+pub struct CompressConfig {
+    /// Minimum string length (bytes) eligible for compression inside JSON.
+    pub min_size: usize,
+    /// Consecutive identical lines needed before dedupe collapse.
+    pub dedupe_threshold: usize,
+    /// Compact lines that are themselves JSON documents.
+    pub compact_json_lines: bool,
+    /// Collapse runs of blank lines.
+    pub collapse_blanks: bool,
+}
+
+impl Default for CompressConfig {
+    fn default() -> Self {
+        Self {
+            min_size: 2048,
+            dedupe_threshold: 3,
+            compact_json_lines: true,
+            collapse_blanks: true,
+        }
+    }
+}
+
+/// Compress free text with all deterministic transforms (default config).
 pub fn compress_text(input: &str) -> (String, CompressOutcome) {
+    compress_text_with(input, &CompressConfig::default())
+}
+
+/// Compress free text with an explicit config.
+pub fn compress_text_with(input: &str, cfg: &CompressConfig) -> (String, CompressOutcome) {
     let mut out = input.to_string();
     let mut applied: Vec<&'static str> = Vec::new();
 
@@ -54,25 +85,29 @@ pub fn compress_text(input: &str) -> (String, CompressOutcome) {
         applied.push("cr_overwrite");
     }
 
-    // 3. Collapse runs of >=3 consecutive identical lines to one + marker.
-    let (deduped, n_dedup) = collapse_repeated_lines(&out, 3);
+    // 3. Collapse runs of >=threshold consecutive identical lines to one + marker.
+    let (deduped, n_dedup) = collapse_repeated_lines(&out, cfg.dedupe_threshold);
     if n_dedup > 0 {
         out = deduped;
         applied.push("dedupe_lines");
     }
 
     // 4. Collapse blank-line runs (>=2 blanks -> 1).
-    let (blanked, n_blank) = collapse_blank_runs(&out);
-    if n_blank > 0 {
-        out = blanked;
-        applied.push("blank_runs");
+    if cfg.collapse_blanks {
+        let (blanked, n_blank) = collapse_blank_runs(&out);
+        if n_blank > 0 {
+            out = blanked;
+            applied.push("blank_runs");
+        }
     }
 
     // 5. Compact lines that are themselves JSON documents.
-    let (compacted, n_json) = compact_json_lines(&out);
-    if n_json > 0 {
-        out = compacted;
-        applied.push("json_compact");
+    if cfg.compact_json_lines {
+        let (compacted, n_json) = compact_json_lines(&out);
+        if n_json > 0 {
+            out = compacted;
+            applied.push("json_compact");
+        }
     }
 
     // 6. Trim trailing whitespace per line.
@@ -248,16 +283,28 @@ fn trim_line_ends(input: &str) -> String {
 /// Returns the transformed value and total bytes saved. Never errors — on any
 /// surprise the original value is returned untouched.
 pub fn compress_json_value(value: serde_json::Value, min_bytes: usize) -> (serde_json::Value, usize) {
+    let cfg = CompressConfig {
+        min_size: min_bytes,
+        ..CompressConfig::default()
+    };
+    compress_json_value_with(value, &cfg)
+}
+
+/// Config-driven variant of `compress_json_value`.
+pub fn compress_json_value_with(
+    value: serde_json::Value,
+    cfg: &CompressConfig,
+) -> (serde_json::Value, usize) {
     let mut saved = 0usize;
-    let out = walk(value, min_bytes, &mut saved);
+    let out = walk(value, cfg, &mut saved);
     (out, saved)
 }
 
-fn walk(value: serde_json::Value, min_bytes: usize, saved: &mut usize) -> serde_json::Value {
+fn walk(value: serde_json::Value, cfg: &CompressConfig, saved: &mut usize) -> serde_json::Value {
     use serde_json::Value;
     match value {
-        Value::String(s) if s.len() >= min_bytes => {
-            let (compressed, _outcome) = compress_text(&s);
+        Value::String(s) if s.len() >= cfg.min_size => {
+            let (compressed, _outcome) = compress_text_with(&s, cfg);
             if compressed.len() < s.len() {
                 *saved += s.len() - compressed.len();
                 Value::String(compressed)
@@ -268,12 +315,12 @@ fn walk(value: serde_json::Value, min_bytes: usize, saved: &mut usize) -> serde_
         Value::Array(items) => Value::Array(
             items
                 .into_iter()
-                .map(|v| walk(v, min_bytes, saved))
+                .map(|v| walk(v, cfg, saved))
                 .collect(),
         ),
         Value::Object(map) => Value::Object(
             map.into_iter()
-                .map(|(k, v)| (k, walk(v, min_bytes, saved)))
+                .map(|(k, v)| (k, walk(v, cfg, saved)))
                 .collect(),
         ),
         other => other,

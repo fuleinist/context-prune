@@ -81,10 +81,14 @@ upstream LLM API (OpenAI, Anthropic, local)
 
 ## Stretch Goals (v2)
 
-- Tree-sitter-aware code summarization (keep signatures, drop bodies).
-- Local code-graph context builder (like codegraph).
-- Per-model compression profiles.
-- Cache of compressed blobs keyed by content hash.
+- [x] Tree-sitter-aware code summarization (keep signatures, drop bodies).
+  Done cycle 7: `context-prune skeleton <file>` (feature `skeleton`).
+- [x] Per-model compression profiles. Done cycle 8: `--profile default|
+  conservative|aggressive` on `serve`/`compress`; small-context models
+  (haiku/flash/mini/nano) auto-route to `aggressive` via the request's
+  `model` field. `--min-size` overrides the profile's floor.
+- [ ] Local code-graph context builder (like codegraph).
+- [ ] Cache of compressed blobs keyed by content hash.
 
 ## Tech Stack
 

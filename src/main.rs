@@ -1,4 +1,5 @@
 mod compress;
+mod profiles;
 #[cfg(feature = "skeleton")]
 mod skeleton;
 mod stats;
@@ -27,15 +28,20 @@ enum Command {
         /// Upstream LLM API base URL
         #[arg(long, default_value = "https://api.openai.com")]
         upstream: String,
-        /// Minimum string size (bytes) eligible for compression
-        #[arg(long, default_value = "2048")]
-        min_size: usize,
+        /// Minimum string size (bytes) eligible for compression;
+        /// overrides the profile's min_size when given
+        #[arg(long)]
+        min_size: Option<usize>,
         /// SQLite database path for stats
         #[arg(long, default_value = "context-prune.db")]
         db: String,
         /// Disable compression entirely (pure passthrough)
         #[arg(long)]
         passthrough: bool,
+        /// Compression profile: default, conservative, aggressive
+        /// (per-model overrides still apply, e.g. small models -> aggressive)
+        #[arg(long, default_value = "default")]
+        profile: String,
     },
     /// Show cumulative compression stats from the DB
     Stats {
@@ -73,6 +79,9 @@ enum Command {
         /// Also print the compressed output
         #[arg(long)]
         show: bool,
+        /// Compression profile: default, conservative, aggressive
+        #[arg(long, default_value = "default")]
+        profile: String,
     },
 }
 
@@ -86,13 +95,15 @@ async fn main() -> Result<()> {
             min_size,
             db,
             passthrough,
-        } => proxy::serve(port, &upstream, min_size, &db, passthrough).await,
+            profile,
+        } => proxy::serve(port, &upstream, &profile, min_size, &db, passthrough).await,
         Command::Stats { db } => stats_cmd(&db),
         Command::Compress {
             path,
             min_size,
             show,
-        } => compress_cmd(&path, min_size, show),
+            profile,
+        } => compress_cmd(&path, min_size, show, &profile),
         Command::Bench {
             path,
             iterations,
@@ -105,8 +116,14 @@ async fn main() -> Result<()> {
 
 mod proxy;
 
-fn compress_cmd(path: &str, min_size: usize, show: bool) -> Result<()> {
+fn compress_cmd(path: &str, min_size: usize, show: bool, profile_name: &str) -> Result<()> {
     use std::io::Read;
+    let profile = profiles::resolve(profile_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown profile '{profile_name}' (try: default, conservative, aggressive)"))?;
+    let cfg = compress::CompressConfig {
+        min_size,
+        ..profile.config
+    };
     let input = if path == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
@@ -120,7 +137,7 @@ fn compress_cmd(path: &str, min_size: usize, show: bool) -> Result<()> {
         match serde_json::from_str::<serde_json::Value>(&input) {
             Ok(v) => {
                 let before = serde_json::to_string(&v)?;
-                let (out_v, saved) = compress::compress_json_value(v, min_size);
+                let (out_v, saved) = compress::compress_json_value_with(v, &cfg);
                 let out_str = serde_json::to_string_pretty(&out_v)?;
                 let r = if before.is_empty() {
                     0.0
@@ -130,7 +147,7 @@ fn compress_cmd(path: &str, min_size: usize, show: bool) -> Result<()> {
                 (out_str, saved, "json", Vec::new(), r.max(0.0))
             }
             Err(_) => {
-                let (out, outcome) = compress::compress_text(&input);
+                let (out, outcome) = compress::compress_text_with(&input, &cfg);
                 let saved = outcome.input_bytes.saturating_sub(outcome.output_bytes);
                 let ratio = outcome.ratio();
                 (out, saved, "text", outcome.transforms_applied, ratio)
@@ -139,6 +156,7 @@ fn compress_cmd(path: &str, min_size: usize, show: bool) -> Result<()> {
 
     let in_bytes = input.len();
     let out_bytes = output.len();
+    println!("profile:         {profile_name}");
     println!("mode:            {mode}");
     if !transforms.is_empty() {
         println!("transforms:      {}", transforms.join(", "));

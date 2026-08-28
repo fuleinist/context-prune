@@ -13,14 +13,15 @@ use axum::{
 };
 use std::sync::{Arc, Mutex};
 
-use crate::compress;
+use crate::compress::{self, CompressConfig};
+use crate::profiles::{self, Profile};
 use crate::stats::StatsStore;
 
 #[derive(Clone)]
 pub struct ProxyState {
     pub upstream: String,
-    pub min_size: usize,
     pub passthrough: bool,
+    pub profile: Profile,
     pub client: reqwest::Client,
     pub stats: Arc<Mutex<StatsStore>>,
 }
@@ -28,26 +29,35 @@ pub struct ProxyState {
 pub async fn serve(
     port: u16,
     upstream: &str,
-    min_size: usize,
+    profile_name: &str,
+    min_size_override: Option<usize>,
     db: &str,
     passthrough: bool,
 ) -> anyhow::Result<()> {
+    let mut profile = profiles::resolve(profile_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown profile '{profile_name}' (try: default, conservative, aggressive)"))?;
+    if let Some(ms) = min_size_override {
+        profile.config.min_size = ms;
+    }
     let stats = Arc::new(Mutex::new(StatsStore::open(db)?));
     let state = ProxyState {
         upstream: upstream.trim_end_matches('/').to_string(),
-        min_size,
         passthrough,
+        profile,
         client: reqwest::Client::new(),
         stats,
     };
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    eprintln!(
+        "context-prune listening on http://{addr} -> {} (profile: {})",
+        state.upstream, state.profile.name
+    );
 
     let app = Router::new()
         .route("/stats", axum::routing::get(stats_handler))
         .route("/{*path}", any(proxy_handler))
         .with_state(state);
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    eprintln!("context-prune listening on http://{addr} -> {upstream}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -117,10 +127,21 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     };
     let bytes_in = body_bytes.len() as i64;
 
+    // Pick a compression profile: the request's `model` field can override
+    // the server default (small-context models get squeezed harder).
+    let request_model: Option<String> = if !body_bytes.is_empty() && body_bytes[0] == b'{' {
+        serde_json::from_slice::<serde_json::Value>(&body_bytes)
+            .ok()
+            .and_then(|v| v.get("model")?.as_str().map(str::to_string))
+    } else {
+        None
+    };
+    let profile = profiles::for_model(request_model.as_deref(), &state.profile);
+
     let final_body = if state.passthrough || body_bytes.is_empty() {
         body_bytes.to_vec()
     } else {
-        maybe_compress_json_bytes(&body_bytes, state.min_size)
+        maybe_compress_json_bytes(&body_bytes, &profile.config)
     };
 
     upstream_req = upstream_req.body(final_body);
@@ -198,7 +219,7 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     let final_resp = if state.passthrough {
         resp_bytes.to_vec()
     } else {
-        maybe_compress_json_bytes(&resp_bytes, state.min_size)
+        maybe_compress_json_bytes(&resp_bytes, &profile.config)
     };
     let bytes_out = final_resp.len() as i64;
     record_stats(&state, &path, bytes_in, bytes_out);
@@ -222,7 +243,7 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
 
 /// Try to parse bytes as JSON and compress string fields. On ANY failure or
 /// non-JSON input, returns the original bytes unchanged (F5 safety).
-fn maybe_compress_json_bytes(bytes: &[u8], min_size: usize) -> Vec<u8> {
+fn maybe_compress_json_bytes(bytes: &[u8], cfg: &CompressConfig) -> Vec<u8> {
     if bytes.len() < 2 {
         return bytes.to_vec();
     }
@@ -234,7 +255,7 @@ fn maybe_compress_json_bytes(bytes: &[u8], min_size: usize) -> Vec<u8> {
         Ok(v) => v,
         Err(_) => return bytes.to_vec(),
     };
-    let (compressed, _saved) = compress::compress_json_value(parsed, min_size);
+    let (compressed, _saved) = compress::compress_json_value_with(parsed, cfg);
     match serde_json::to_vec(&compressed) {
         Ok(out) if out.len() < bytes.len() => out,
         _ => bytes.to_vec(),
