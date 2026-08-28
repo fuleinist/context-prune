@@ -58,6 +58,22 @@ context-prune skeleton src/main.rs --show
 # saved: 77.7% on this repo's compress.rs
 ```
 
+Content-hash cache — deduplicate repeated blobs across requests
+(SPEC v2):
+
+```bash
+context-prune serve --upstream https://api.openai.com --port 8787
+# identical payloads reuse cached compressed output
+# disable with: --no-cache
+```
+
+Check cache hit rate:
+
+```bash
+curl localhost:8787/stats
+# includes cache_hits and cache_entries
+```
+
 ## Status
 
 Early build — see [SPEC.md](SPEC.md) for the full feature list and acceptance
