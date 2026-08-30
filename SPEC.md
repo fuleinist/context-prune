@@ -88,7 +88,7 @@ upstream LLM API (OpenAI, Anthropic, local)
   (haiku/flash/mini/nano) auto-route to `aggressive` via the request's
   `model` field. `--min-size` overrides the profile's floor.
 - [ ] Local code-graph context builder (like codegraph).
-- [ ] Cache of compressed blobs keyed by content hash.
+- [x] Cache of compressed blobs keyed by content hash. Done cycle 9: `src/cache.rs`, SQLite-backed content-hash cache with LRU semantics. `--no-cache` flag to disable. Stats endpoint reports `cache_hits` and `cache_entries`.
 
 ## Tech Stack
 
