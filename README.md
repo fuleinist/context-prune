@@ -67,6 +67,22 @@ context-prune serve --upstream https://api.openai.com --port 8787
 # disable with: --no-cache
 ```
 
+Build a code graph — compact symbol + call map of a Rust codebase,
+the structural context a model usually needs instead of whole files
+(SPEC v2):
+
+```bash
+context-prune graph src            # stats summary
+context-prune graph src --show     # full text graph (nodes + edges)
+context-prune graph src --json     # machine-readable JSON
+# on this repo's own src: 112 nodes, 143 edges, ~84% smaller than source
+```
+
+Nodes are top-level items and impl methods (`Point::norm`); edges are
+call sites resolved by name against the defined symbols. Deterministic
+output (sorted, deduped). v1 resolves by name only — no type resolution —
+so ambiguous or external calls are counted and skipped, never guessed.
+
 Check cache hit rate:
 
 ```bash
