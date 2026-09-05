@@ -3,6 +3,8 @@ mod cache;
 mod profiles;
 #[cfg(feature = "skeleton")]
 mod skeleton;
+#[cfg(feature = "skeleton")]
+mod graph;
 mod stats;
 
 use anyhow::Result;
@@ -73,6 +75,18 @@ enum Command {
         #[arg(long)]
         show: bool,
     },
+    /// Build a compact symbol + call graph of Rust code (SPEC v2 stretch)
+    #[cfg(feature = "skeleton")]
+    Graph {
+        /// File or directory to graph (directories scanned recursively for *.rs)
+        path: String,
+        /// Emit machine-readable JSON instead of the stats summary
+        #[arg(long)]
+        json: bool,
+        /// Also print the full graph (text mode)
+        #[arg(long)]
+        show: bool,
+    },
     /// Compress a single file and report the ratio (demo / debugging)
     Compress {
         /// File to compress ('-' for stdin)
@@ -116,6 +130,8 @@ async fn main() -> Result<()> {
         } => bench_cmd(&path, iterations, min_size),
         #[cfg(feature = "skeleton")]
         Command::Skeleton { path, show } => skeleton_cmd(&path, show),
+        #[cfg(feature = "skeleton")]
+        Command::Graph { path, json, show } => graph_cmd(&path, json, show),
     }
 }
 
@@ -240,6 +256,64 @@ fn skeleton_cmd(path: &str, show: bool) -> Result<()> {
             println!("mode:            passthrough (input did not parse as Rust)");
             println!("input:           {} bytes", input.len());
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "skeleton")]
+fn graph_cmd(path: &str, json: bool, show: bool) -> Result<()> {
+    let root = std::path::Path::new(path);
+    anyhow::ensure!(root.exists(), "path does not exist: {path}");
+    let files = graph::collect_rust_files(root)?;
+    anyhow::ensure!(!files.is_empty(), "no .rs files found under {path}");
+
+    let mut g = graph::CodeGraph::default();
+    for f in &files {
+        let source = std::fs::read_to_string(f)?;
+        let rel = f
+            .strip_prefix(root)
+            .ok()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| {
+                f.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| f.display().to_string())
+            });
+        g.add_source(&rel, &source);
+    }
+    g.finish();
+
+    if json {
+        println!("{}", graph::render_json(&g));
+        return Ok(());
+    }
+
+    let text = graph::render_text(&g);
+    let ratio = if g.input_bytes == 0 {
+        0.0
+    } else {
+        1.0 - text.len() as f64 / g.input_bytes as f64
+    };
+    println!("mode:            code-graph (rust, tree-sitter)");
+    println!(
+        "files:           {} scanned, {} parsed, {} unparsed",
+        g.files_scanned,
+        g.files_parsed,
+        g.unparsed.len()
+    );
+    println!("nodes:           {}", g.nodes.len());
+    println!(
+        "edges:           {} resolved, {} unresolved calls ignored",
+        g.edges.len(),
+        g.unresolved_calls
+    );
+    println!("input:           {} bytes", g.input_bytes);
+    println!("output:          {} bytes", text.len());
+    println!("saved:           {:.1}%", ratio.max(0.0) * 100.0);
+    if show {
+        println!("---");
+        println!("{text}");
     }
     Ok(())
 }
